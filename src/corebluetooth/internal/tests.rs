@@ -1524,6 +1524,50 @@ async fn concurrent_connect_waiters_both_complete() {
 }
 
 #[tokio::test]
+async fn confirm_disconnect_resolves_disconnect_waiters_with_ok() {
+    let peripheral_uuid = Uuid::from_u128(0x12345678_1234_5678_1234_567812345678);
+    let (peripheral, mut internal) = new_test_internal(peripheral_uuid);
+
+    let disconnect_a = CoreBluetoothReplyFuture::default();
+    let disconnect_b = CoreBluetoothReplyFuture::default();
+    let connect = CoreBluetoothReplyFuture::default();
+    internal
+        .disconnected_future_state
+        .push_back(disconnect_a.get_state_clone());
+    internal
+        .disconnected_future_state
+        .push_back(disconnect_b.get_state_clone());
+    internal
+        .connected_future_state
+        .push_back(connect.get_state_clone());
+
+    internal.confirm_disconnect();
+
+    for (name, future) in [("first", disconnect_a), ("second", disconnect_b)] {
+        let reply = tokio::time::timeout(Duration::from_secs(1), future)
+            .await
+            .unwrap_or_else(|_| panic!("{name} disconnect waiter never completed"));
+        assert!(
+            matches!(reply, CoreBluetoothReply::Ok),
+            "{name}: unexpected reply: {reply:?}"
+        );
+    }
+    // A connect still pending can't complete once the device is gone.
+    let reply = tokio::time::timeout(Duration::from_secs(1), connect)
+        .await
+        .expect("connect waiter never completed");
+    assert!(
+        matches!(reply, CoreBluetoothReply::Err(_)),
+        "connect: unexpected reply: {reply:?}"
+    );
+    assert!(internal.disconnected_future_state.is_empty());
+    assert!(internal.connected_future_state.is_empty());
+
+    std::mem::forget(internal);
+    std::mem::forget(peripheral);
+}
+
+#[tokio::test]
 async fn drain_pending_operations_errors_all_queued_waiters() {
     let peripheral_uuid = Uuid::from_u128(0x12345678_1234_5678_1234_567812345678);
     let (peripheral, mut internal) = new_test_internal(peripheral_uuid);

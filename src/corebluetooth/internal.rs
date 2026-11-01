@@ -583,6 +583,11 @@ impl PeripheralInternal {
     }
 
     pub fn confirm_disconnect(&mut self) {
+        // The disconnect a caller asked for has completed, so its waiters get
+        // Ok. Everything else still pending can't complete now, so it fails.
+        for future in self.disconnected_future_state.drain(..) {
+            future.lock().unwrap().set_reply(CoreBluetoothReply::Ok);
+        }
         self.drain_pending_operations("Device disconnected");
     }
 
