@@ -74,6 +74,9 @@ class Peripheral {
     private boolean executingCommand = false;
     private CommandCallback commandCallback;
 
+    // Every Peripheral made, so bluetoothTurnedOff() can reach the connected ones.
+    private static final List<WeakReference<Peripheral>> INSTANCES = new ArrayList<>();
+
     public Peripheral(Adapter adapter, String address) {
         BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         if (bluetoothAdapter == null) {
@@ -82,6 +85,40 @@ class Peripheral {
         this.device = bluetoothAdapter.getRemoteDevice(address);
         this.adapter = adapter;
         this.callback = new Callback();
+        synchronized (INSTANCES) {
+            INSTANCES.removeIf(ref -> ref.get() == null);
+            INSTANCES.add(new WeakReference<>(this));
+        }
+    }
+
+    /**
+     * The phone's Bluetooth is turning off. Android then closes every GATT client itself and
+     * never calls onConnectionStateChange, so without this a connected peripheral stays
+     * "connected", an in-flight command (a disconnect included) waits forever, and Rust never
+     * sees DeviceDisconnected. Deliver the missing STATE_DISCONNECTED to each connected one.
+     * Called through BluetoothState.turnedOff().
+     */
+    static void bluetoothTurnedOff() {
+        List<Peripheral> live = new ArrayList<>();
+        synchronized (INSTANCES) {
+            INSTANCES.removeIf(ref -> ref.get() == null);
+            for (WeakReference<Peripheral> ref : INSTANCES) {
+                Peripheral p = ref.get();
+                if (p != null) {
+                    live.add(p);
+                }
+            }
+        }
+        for (Peripheral p : live) {
+            BluetoothGatt gatt;
+            synchronized (p) {
+                gatt = p.gatt;
+            }
+            if (gatt != null) {
+                Log.i(TAG, "Bluetooth turned off: delivering the disconnect Android skipped");
+                p.callback.onConnectionStateChange(gatt, BluetoothGatt.GATT_SUCCESS, BluetoothGatt.STATE_DISCONNECTED);
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
